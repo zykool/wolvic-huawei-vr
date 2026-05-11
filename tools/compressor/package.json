@@ -1,0 +1,25 @@
+{
+  "name": "fxr-compressor",
+  "version": "1.0.0",
+  "description": "FxR asset compressor",
+  "main": "index.js",
+  "scripts": {
+    "build": "npm run compress",
+    "compress": "gulp compress"
+  },
+  "keywords": [
+    "fxr",
+    "asset",
+    "compressor"
+  ],
+  "author": "Mozilla",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "gulp": "^5.0.0"
+  },
+  "dependencies": {
+    "readdirp": "^3.6.0",
+    "sharp": "^0.32.6",
+    "tmp": "0.2.1"
+  }
+}

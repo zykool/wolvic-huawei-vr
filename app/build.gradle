@@ -1,0 +1,783 @@
+import groovy.json.JsonSlurper
+
+plugins {
+    alias libs.plugins.jetbrains.python.envs
+}
+
+apply plugin: 'com.android.application'
+apply from: "$project.rootDir/tools/gradle/versionCode.gradle"
+apply plugin: 'kotlin-android'
+
+// Apply AGConnect plugin only for Huawei builds
+if (getGradle().getStartParameter().getTaskRequests().toString() =~ /[Hh]vr/
+        || getGradle().getStartParameter().getTaskRequests().toString() =~ /[Vv]isionglass/) {
+    apply plugin: 'com.huawei.agconnect'
+}
+
+def getGitHash = { ->
+    def stdout = new ByteArrayOutputStream()
+    project.exec {
+        commandLine 'git', 'rev-parse', '--short', 'HEAD'
+        standardOutput = stdout
+    }
+    return stdout.toString().trim()
+}
+
+def shouldUseStaticVersionCode = { ->
+    if (gradle.hasProperty("userProperties.useStaticVersionCode")) {
+        return gradle."userProperties.useStaticVersionCode" == "true"
+    }
+    return false
+}
+
+def getCrashRestartDisabled = { ->
+    if (gradle.hasProperty("userProperties.disableCrashRestart")) {
+        return gradle."userProperties.disableCrashRestart"
+    }
+    return "false"
+}
+
+def getDevApplicationIdSuffix = { ->
+    if (gradle.hasProperty("userProperties.simultaneousDevProduction")) {
+        return gradle."userProperties.simultaneousDevProduction" == "true" ? "dev" : ""
+    }
+    return ""
+}
+
+def getUseDebugSigningOnRelease = { ->
+    if (gradle.hasProperty("userProperties.useDebugSigningOnRelease")) {
+        return gradle."userProperties.useDebugSigningOnRelease" == "true"
+    }
+    return false
+}
+
+def getHVRAppId = { ->
+    if (gradle.hasProperty("userProperties.HVR_APP_ID")) {
+        return gradle."userProperties.HVR_APP_ID"
+    }
+    return ""
+}
+
+def getHVRApiKey = { ->
+    def jsonFile = file('agconnect-services.json')
+
+    if (jsonFile.exists()) {
+        def parsedJson = new JsonSlurper().parseText(jsonFile.text)
+        if (parsedJson.client && parsedJson.client.api_key) {
+            return parsedJson.client.api_key
+        }
+    }
+    return ""
+}
+
+def getHVRMLSpeechServices = { ->
+    if (getHVRApiKey().isEmpty()) {
+        return "{ com.igalia.wolvic.speech.SpeechServices.MEETKAI }"
+    } else {
+        return "{ com.igalia.wolvic.speech.SpeechServices.MEETKAI, " +
+                " com.igalia.wolvic.speech.SpeechServices.HUAWEI_ASR }";
+    }
+}
+
+def getMKApiKey = { ->
+    if (gradle.hasProperty("userProperties.MK_API_KEY")) {
+        return gradle."userProperties.MK_API_KEY"
+    }
+    return ""
+}
+
+def isChromiumAvailable = {
+    if (gradle.hasProperty("localProperties.chromium_aar")) {
+        return true
+    }
+    return false
+}
+
+def isWebKitAvailable = {
+    if (gradle.hasProperty("localProperties.webkit_aar")) {
+        return true
+    }
+    return false
+}
+
+// Version names for Gecko and Chromium releases.
+def GECKO_RELEASE_VERSION_NAME = '1.8.3'
+def CHROMIUM_RELEASE_VERSION_NAME = '1.2.3'
+
+android {
+    namespace 'com.igalia.wolvic'
+    compileSdkVersion 35
+    defaultConfig {
+        applicationId "com.igalia.wolvic"
+        minSdkVersion 24
+        targetSdkVersion 34
+        versionCode generatedVersionCode
+        versionName "1.8.3"
+        buildConfigField "String", "GIT_HASH", "\"${getGitHash()}\""
+        buildConfigField "Boolean", "DISABLE_CRASH_RESTART", getCrashRestartDisabled()
+        buildConfigField "String", "AMO_COLLECTION", "\"fxr\""
+        buildConfigField "Boolean", "WEBVIEW_IN_PHONE_UI", "false"
+        buildConfigField "Boolean", "CN_FIRST_RUN_IN_PHONE_UI", "false"
+        buildConfigField "Boolean", "FXA_USE_CHINA_SERVER", "false"
+        buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.MEETKAI }"
+        buildConfigField "Boolean", "SUPPORTS_SYSTEM_NOTIFICATIONS", "false"
+        buildConfigField "Float", "DEFAULT_DENSITY", "1.25f"
+        buildConfigField "Float", "DEFAULT_WINDOW_DISTANCE", "0.0f"
+        buildConfigField "Boolean", "ENABLE_PAGE_ZOOM", "false"
+        buildConfigField "Boolean", "USE_SOUNDPOOL", "true"
+        buildConfigField 'String', 'ANNOUNCEMENTS_ENDPOINT', '"https://igalia.github.io/wolvic/announcements.json"'
+        buildConfigField 'String', 'EXPERIENCES_ENDPOINT', '"https://igalia.github.io/wolvic/experiences.json"'
+        buildConfigField 'String', 'HEYVR_ENDPOINT', '"https://api.heyvr.io/v1/public/global/feed/featured?limit=50"'
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        resValue 'string', 'app_name', 'Wolvic'
+        resValue 'string', 'HOMEPAGE_URL', "https://wolvic.com/start"
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++14 -fexceptions -frtti -Werror" +
+                         " -I" + file("src/main/cpp").absolutePath +
+                         " -I" + file("src/main/cpp/vrb/include").absolutePath +
+                         // CMake 3.10+ needs "-DANDROID" flag, since ANDROID
+                         // flag has been removed in favor of __ANDROID__. But
+                         // vrb still uses "#if defined(ANDROID)"
+                         " -DANDROID"
+
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+        javaCompileOptions {
+            annotationProcessorOptions {
+                arguments = [
+                        "room.schemaLocation":"$projectDir/schemas".toString(),
+                        "room.incremental":"true",
+                        "room.expandProjection":"true"]
+            }
+        }
+        vectorDrawables.useSupportLibrary = true
+    }
+
+    base {
+        archivesName = "Wolvic"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+        coreLibraryDesugaringEnabled true
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+            pickFirsts += ['**/libxul.so']
+        }
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig getUseDebugSigningOnRelease() ? debug.signingConfig : release.signingConfig
+            buildConfigField "String", "MK_API_KEY", "\"${getMKApiKey()}\""
+        }
+        debug {
+            applicationIdSuffix getDevApplicationIdSuffix()
+            pseudoLocalesEnabled true
+            buildConfigField "String", "MK_API_KEY", "\"\""
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+        }
+    }
+
+    // Select the Glean from GeckoView.
+    // `service-sync-logins` requires Glean, which pulls in glean-native,
+    // but that's also provided by geckoview-omni, so now we need to select which one to use.
+    project.configurations.configureEach {
+        resolutionStrategy.capabilitiesResolution.withCapability("org.mozilla.telemetry:glean-native") {
+            def toBeSelected = candidates.find { it.id instanceof ModuleComponentIdentifier && it.id.module.contains('geckoview') }
+            if (toBeSelected != null) {
+                select(toBeSelected)
+            }
+            because 'use GeckoView Glean instead of standalone Glean'
+        }
+    }
+
+    applicationVariants.configureEach { variant ->
+        // Use different version names for release builds for each backend.
+        def backend = variant.productFlavors.get(2).name
+        variant.outputs.each { output ->
+            if (variant.buildType.name == "release") {
+                if (backend == "gecko") {
+                    output.versionNameOverride = GECKO_RELEASE_VERSION_NAME
+                } else if (backend == "chromium") {
+                    output.versionNameOverride = CHROMIUM_RELEASE_VERSION_NAME
+                }
+            }
+            if (shouldUseStaticVersionCode()) {
+                // Overrides any build created with a generated version code from now to 2115
+                output.versionCodeOverride = 1_99_365_2300
+            } else if (variant.productFlavors[0].name.toLowerCase().startsWith('picoxr')) {
+                // PICO store requires a slightly different version code.
+                output.versionCodeOverride = generatedVersionCode + 1900000000
+            }
+        }
+    }
+
+    productFlavors {
+        // Supported platforms
+        oculusvr {
+            dimension "platform"
+            targetSdkVersion 32
+            buildConfigField "Boolean", "USE_SOUNDPOOL", "false"
+            externalNativeBuild {
+                cmake {
+                    cppFlags "-DOCULUSVR -DOPENXR"
+                    arguments "-DVR_SDK_EXTRA_LIB=ovrplatform-lib", "-DOCULUSVR=ON", "-DOPENXR=ON"
+                }
+            }
+            manifestPlaceholders = [ headtrackingRequired:"false", permissionToRemove:"android.permission.RECEIVE_BOOT_COMPLETED" ]
+        }
+
+        picoxr {
+            dimension "platform"
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DPICOXR -DOPENXR -I" + file("src/openxr/cpp").absolutePath
+                    arguments "-DVR_SDK_LIB=picoxr-lib", "-DPICOXR=ON", "-DOPENXR=ON"
+                }
+            }
+        }
+
+        lynx {
+            dimension "platform"
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DLYNX -DOPENXR -I" + file("src/openxr/cpp").absolutePath
+                    arguments "-DLYNX=ON", "-DOPENXR=ON"
+                }
+            }
+        }
+
+        spaces {
+            dimension "platform"
+            targetSdkVersion 29
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DSPACES -DOPENXR -I" + file("src/openxr/cpp").absolutePath
+                    arguments "-DSPACES=ON", "-DOPENXR=ON"
+                }
+            }
+        }
+
+        aosp {
+            dimension "platform"
+            targetSdkVersion 29
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DAOSP -DOPENXR -I" + file("src/openxr/cpp").absolutePath
+                    arguments "-DAOSP=ON", "-DOPENXR=ON"
+                }
+            }
+            buildConfigField "Float", "DEFAULT_DENSITY", "1.0f"
+        }
+
+        hvr {
+            dimension "platform"
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DHVR -DOPENXR -I" + file("src/openxr/cpp").absolutePath
+                    arguments "-DVR_SDK_LIB=hvr-lib", "-DHVR=ON", "-DOPENXR=ON"
+                }
+            }
+            buildConfigField "String", "HVR_APP_ID", "\"${getHVRAppId()}\""
+            buildConfigField "String", "HVR_API_KEY", "\"${getHVRApiKey()}\""
+            buildConfigField "String", "MK_API_KEY", "\"\""
+            buildConfigField "String[]", "SPEECH_SERVICES", "${getHVRMLSpeechServices()}"
+            buildConfigField "Boolean", "SUPPORTS_SYSTEM_NOTIFICATIONS", "true"
+            buildConfigField "Boolean", "WEBVIEW_IN_PHONE_UI", "true"
+            buildConfigField "Float", "DEFAULT_DENSITY", "1.0f"
+        }
+
+        noapi {
+            dimension "platform"
+            applicationIdSuffix ".noapi"
+            resValue "string", "app_name", "Wolvic NoAPI"
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DNOAPI"
+                    arguments "-DNOAPI=ON"
+                }
+            }
+        }
+
+        visionglass {
+            dimension "platform"
+            applicationId "com.igalia.wolvic"
+            applicationIdSuffix ".visionglass"
+            resValue "string", "app_name", "Wolvic Vision"
+            targetSdkVersion 33
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DVISIONGLASS"
+                    arguments "-DVISIONGLASS=ON"
+                }
+            }
+            buildConfigField "String", "HVR_API_KEY", "\"${getHVRApiKey()}\""
+            buildConfigField "Float", "DEFAULT_DENSITY", "1.5f"
+            buildConfigField "Float", "DEFAULT_WINDOW_DISTANCE", "1.0f"
+        }
+
+        // Supported ABIs
+        arm64 {
+            dimension "abi"
+            ndk {
+                abiFilters "arm64-v8a"
+            }
+        }
+
+        x64 {
+            dimension "abi"
+            ndk {
+                abiFilters "x86_64"
+            }
+        }
+
+        // Supported Backends
+        gecko {
+            dimension "backend"
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DGECKO"
+                    arguments "-DGECKO=ON"
+                }
+            }
+            buildConfigField 'String', 'PROPS_ENDPOINT', '"https://igalia.github.io/wolvic/props.json"'
+        }
+
+        chromium {
+            dimension "backend"
+            resValue "string", "app_name", "Wolvic Chromium"
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DCHROMIUM"
+                    arguments "-DCHROMIUM=ON"
+                }
+            }
+            buildConfigField "Boolean", "ENABLE_PAGE_ZOOM", "true"
+            buildConfigField 'String', 'PROPS_ENDPOINT', '"https://igalia.github.io/wolvic/props-chromium.json"'
+        }
+
+        webkit {
+            dimension "backend"
+        }
+
+        // Stores flavor
+        generic {
+            dimension "store"
+        }
+
+        metaStore {
+            dimension "store"
+            applicationIdSuffix ".metastore"
+            externalNativeBuild {
+                cmake {
+                    cppFlags "-DSTORE_BUILD", "-DMETA_APP_ID=5917120145021341"
+                }
+            }
+        }
+
+        mainlandChina {
+            applicationId "com.cn.igalia.wolvic"
+            dimension "store"
+            buildConfigField "Boolean", "FXA_USE_CHINA_SERVER", "true"
+            buildConfigField "Boolean", "WEBVIEW_IN_PHONE_UI", "true"
+            buildConfigField "Boolean", "CN_FIRST_RUN_IN_PHONE_UI", "true"
+        }
+
+        magicleap {
+            dimension "store"
+        }
+    }
+
+    variantFilter { variant ->
+        def platform = variant.getFlavors().get(0).name
+        def abi = variant.getFlavors().get(1).name
+        def backend = variant.getFlavors().get(2).name
+        def store = variant.getFlavors().get(3).name
+
+        // Create x64 variants only for noapi and aosp platforms
+        if (abi == 'x64')
+            variant.setIgnore(platform != 'noapi' && platform !='aosp');
+
+        // Create variants for China only for HVR and Pico platforms
+        if (store == 'mainlandChina' && !(platform.startsWith('hvr') || platform.startsWith('visionglass') || platform.startsWith('picoxr')))
+            variant.setIgnore(true);
+
+        // Create variants for chromium/webkit, only when they are available
+        if (backend == 'chromium' && !isChromiumAvailable())
+            variant.setIgnore(true);
+        if (backend == 'webkit' && !isWebKitAvailable())
+            variant.setIgnore(true);
+
+        // MetaStore only apply to oculusvr builds.
+        if (store == 'metaStore' && !platform.startsWith('oculusvr'))
+            variant.setIgnore(true);
+
+        // MagicLeap only for AOSP x64 builds.
+        if (store == 'magicleap' && (platform != 'aosp' || abi != 'x64'))
+            variant.setIgnore(true);
+        
+    }
+
+    androidComponents {
+        onVariants(selector().all()) { variant ->
+            def platform = variant.productFlavors.get(0).second
+            def store = variant.productFlavors.get(3).second
+
+            // Adjust the applicationId so it matches what the store expects.
+            if (platform == "visionglass" && store == "generic") {
+                variant.applicationId.set("com.igalia.wolvic.world.visionglass")
+            }
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = [
+                    'app',
+                    'src/common/shared',
+                    'src/main/cpp/vrb/android/java'
+            ]
+        }
+
+        release {
+            manifest.srcFile getUseDebugSigningOnRelease() ? "src/debug/AndroidManifest.xml"
+                                                           : manifest.srcFile
+        }
+
+        oculusvr {
+            java.srcDirs = [
+                    'src/oculusvr/java'
+            ]
+        }
+
+        hvr {
+            java.srcDirs = [
+                    'src/hvr/java',
+                    'src/hvrcommon/java'
+            ]
+            assets.srcDirs = [
+                    'src/hvr/assets'
+            ]
+            res.srcDirs = [
+                    'src/hvr/res',
+                    'src/hvrcommon/res'
+            ]
+        }
+
+        lynx {
+            manifest.srcFile "src/lynx/AndroidManifest.xml"
+        }
+
+        spaces {
+            manifest.srcFile "src/spaces/AndroidManifest.xml"
+        }
+
+        aosp {
+            manifest.srcFile "src/aosp/AndroidManifest.xml"
+        }
+
+        noapi {
+            java.srcDirs = [
+                    'src/noapi/java'
+            ]
+        }
+
+        visionglass {
+            java.srcDirs = [
+                    'src/visionglass/java',
+                    'src/hvrcommon/java'
+            ]
+            res.srcDirs = [
+                    'src/visionglass/res',
+                    'src/hvrcommon/res'
+            ]
+        }
+
+        gecko {
+            java.srcDirs = [
+                    'src/common/gecko'
+            ]
+        }
+
+        chromium {
+            java.srcDirs = [
+                    'src/common/chromium'
+            ]
+        }
+
+        webkit {
+            java.srcDirs = [
+                    'src/common/webkit'
+            ]
+        }
+    }
+
+    sourceSets.configureEach { sourceSet ->
+        // oculusvr needs a specific manifest file by its buildtype.
+        def name = sourceSet.name
+        if (name.startsWith('oculusvr')) {
+           if (name.toLowerCase().contains('debug')) {
+                manifest.srcFile "src/oculusvrArmDebug/AndroidManifest.xml"
+           }
+
+           if (name.toLowerCase().contains('release')) {
+               manifest.srcFile getUseDebugSigningOnRelease()
+                   ? "src/oculusvrArmDebug/AndroidManifest.xml"
+                   : "src/oculusvrArmRelease/AndroidManifest.xml"
+           }
+        }
+    }
+
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
+
+
+    buildFeatures {
+        flavorDimensions = [ "platform", "abi", "backend", "store" ]
+        viewBinding true
+        prefab true // enable prefab support for various SDK AAR
+        dataBinding true
+        buildConfig true
+    }
+
+    lint {
+        disable 'ExtraTranslation'
+    }
+    androidResources {
+        noCompress 'pak'
+        noCompress 'ja'
+        noCompress 'dat'
+        noCompress 'bin'
+    }
+
+}
+
+configurations {
+    jnaForTest
+    armImplementation
+    x86Implementation
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+
+    // Common
+    implementation libs.lifecycle.runtime
+    implementation libs.lifecycle.viewmodel
+    implementation libs.lifecycle.java8
+    implementation libs.lifecycle.process
+    implementation libs.support.annotations
+    implementation libs.support.appcompat
+    implementation libs.support.recyclerview
+    implementation libs.support.cardview
+    implementation libs.support.design
+    implementation libs.support.vectordrawable
+    implementation libs.support.viewpager2
+    implementation libs.constraintlayout
+    implementation libs.gson
+    implementation libs.room.runtime
+    annotationProcessor libs.room.compiler
+
+    // Android Components
+    implementation libs.androidcomponents.browser.errorpages
+    implementation libs.androidcomponents.browser.state
+    implementation libs.androidcomponents.browser.storage
+    implementation libs.androidcomponents.browser.domains
+    implementation libs.androidcomponents.browser.icons
+    implementation libs.androidcomponents.feature.findinpage
+    implementation libs.androidcomponents.feature.search
+    implementation libs.androidcomponents.feature.toolbar
+    implementation libs.androidcomponents.feature.top.sites
+    implementation libs.androidcomponents.service.accounts
+    implementation libs.androidcomponents.service.sync.logins
+    implementation libs.androidcomponents.mozilla.service.location
+    implementation libs.androidcomponents.ui.autocomplete
+    implementation libs.androidcomponents.concept.engine
+    implementation libs.androidcomponents.concept.fetch
+    implementation libs.androidcomponents.lib.fetch
+    implementation libs.androidcomponents.lib.dataprotect
+    implementation libs.androidcomponents.support.images
+    implementation libs.androidcomponents.support.rustlog
+    implementation libs.androidcomponents.support.rusthttp
+    implementation libs.androidcomponents.support.webextensions
+    implementation libs.androidcomponents.support.ktx
+    implementation libs.androidcomponents.feature.accounts
+    implementation libs.androidcomponents.feature.webcompat
+    implementation libs.androidcomponents.feature.webcompat.reporter
+    implementation libs.androidcomponents.feature.addons
+    implementation libs.support.preference
+
+    // Kotlin dependency
+    implementation libs.kotlin.stdlib
+    implementation libs.kotlin.coroutines
+    implementation libs.kotlin.coroutines.jdk8
+
+    // DiskLRUCache used to cache snapshots
+    implementation libs.disklrucache
+
+    // Color picker library
+    implementation libs.colorpicker
+
+    // Required for targeting S+
+    implementation libs.work.runtime
+    implementation libs.work.runtime.ktx
+
+    // OpenXR standard loader
+    implementation libs.openxrloader
+
+    // Testing
+    androidTestImplementation libs.atsl.runner
+    androidTestImplementation libs.atsl.junit
+    androidTestImplementation libs.espresso.core
+    testImplementation libs.junit
+    testImplementation libs.atsl.core
+    testImplementation libs.robolectric
+    testImplementation libs.androidcomponents.support.test
+    testImplementation libs.androidcomponents.support.test.appservices
+    jnaForTest libs.jna
+    testImplementation files(configurations.jnaForTest.copyRecursive().files)
+    testImplementation libs.work.testing
+
+    // MeetKai
+    implementation fileTree(dir: "${project.rootDir}/libs/meetkai/", include: ['*.aar'])
+    implementation libs.okhttp
+    implementation libs.zip4j
+    implementation libs.apache.commonsmath3
+
+    // AOSP
+    aospImplementation libs.games.activity
+
+    // HVR
+    hvrImplementation fileTree(dir: "${project.rootDir}/third_party/hvr", include: ['*.jar'])
+    hvrImplementation libs.huawei.agconnect.core
+    hvrImplementation libs.huawei.agconnect.core.harmony
+    hvrImplementation libs.huawei.hms.hianaalytics
+    hvrImplementation libs.huawei.hms.location
+    hvrImplementation libs.huawei.hms.mlcomputervoiceasr
+    hvrImplementation libs.huawei.hms.push
+
+    // Snapdragon Spaces
+    spacesImplementation fileTree(dir: "${project.rootDir}/third_party/spaces", include: ['*.aar'])
+
+    // Vision Glass
+    visionglassImplementation fileTree(dir: "${project.rootDir}/third_party/aliceimu/", include: ['*.aar'])
+    visionglassImplementation fileTree(dir: "${project.rootDir}/third_party/hvr", include: ['*.jar'])
+    visionglassImplementation libs.huawei.agconnect.core
+    visionglassImplementation libs.huawei.agconnect.core.harmony
+    visionglassImplementation libs.huawei.hms.mlcomputervoiceasr
+
+    // gecko
+    def branch = "nightly" // "release", "nightly" or "beta"
+    geckoImplementation libs.geckoview."${branch}".x64
+    geckoImplementation libs.geckoview."${branch}".arm64
+    configurations.all {
+         resolutionStrategy.capabilitiesResolution.withCapability('org.mozilla.geckoview:geckoview') {
+            def abi = getName().toLowerCase().contains('x64') ? 'x86_64' : 'arm64'
+            def candidate = branch == "release" ? "geckoview-omni-${abi}" : "geckoview-${branch}-omni-${abi}"
+            select(candidates.find { it.id.module.contains(candidate) })
+        }
+    }
+
+    // chromium
+    if (isChromiumAvailable()) {
+        chromiumImplementation fileTree(dir: gradle."localProperties.chromium_aar", include: ['*.aar'])
+        chromiumImplementation 'androidx.fragment:fragment:1.8.5'
+    }
+
+    // webkit
+    if (isWebKitAvailable()) {
+        webkitImplementation fileTree(dir: gradle."localProperties.webkit_aar", include: ['*.aar'])
+    }
+
+    // openwnn (bundled because it is not published outside of JCenter, which is deprecated)
+    implementation fileTree(dir: "${project.rootDir}/libs/openwnn/", include: ['*.aar'])
+
+    // OpenTelemetry
+    implementation libs.opentelemetry.android.core
+    implementation libs.opentelemetry.android.instrumentation.activity
+    implementation libs.opentelemetry.android.instrumentation.anr
+    implementation libs.opentelemetry.android.instrumentation.crash
+    implementation libs.opentelemetry.android.instrumentation.sessions
+    implementation libs.opentelemetry.exporter.logging
+    coreLibraryDesugaring libs.desugar.jdk.libs
+}
+
+if (findProject(':servo')) {
+    dependencies {
+      oculusvrImplementation project(':servo')
+    }
+}
+
+if (gradle.hasProperty('geckoViewLocalArm') || gradle.hasProperty('geckoViewLocalX86')) {
+    throw new GradleException("geckoViewLocal{Arm,X86} are deprecated: use geckoViewLocalTopsrcdir and geckoViewLocalTopobjdir")
+}
+
+if (gradle.hasProperty('localProperties.dependencySubstitutions.geckoviewTopsrcdir')) {
+    if (getGradle().getStartParameter().getTaskRequests().toString().toLowerCase().contains('x64')
+            && gradle.hasProperty('localProperties.dependencySubstitutions.geckoviewTopobjdirX64')) {
+        ext.topobjdir = gradle."localProperties.dependencySubstitutions.geckoviewTopobjdirX64"
+    } else if (gradle.hasProperty('localProperties.dependencySubstitutions.geckoviewTopobjdir')) {
+        ext.topobjdir = gradle."localProperties.dependencySubstitutions.geckoviewTopobjdir"
+    }
+    ext.topsrcdir = gradle."localProperties.dependencySubstitutions.geckoviewTopsrcdir"
+    apply from: "${topsrcdir}/substitute-local-geckoview.gradle"
+}
+
+// -------------------------------------------------------------------------------------------------
+// MLS: Read token from local file if it exists
+// -------------------------------------------------------------------------------------------------
+
+android.applicationVariants.configureEach { variant ->
+    try {
+        def token = new File("${rootDir}/.mls_token").text.trim()
+        buildConfigField 'String', 'MLS_TOKEN', '"' + token + '"'
+        println "MLS_TOKEN added from .mls_token file"
+    } catch (FileNotFoundException ignored) {
+        buildConfigField 'String', 'MLS_TOKEN', '""'
+    }
+
+    def platform = variant.productFlavors.get(0).name
+    def store = variant.productFlavors.get(3).name
+
+    // Default homepages and voice recognition services for China releases.
+    // HVR packages for mainland china must only use HVR speech recognition system.
+    if (store == "mainlandChina") {
+        if (platform.toLowerCase().startsWith('hvr')) {
+            variant.resValue 'string', 'HOMEPAGE_URL', '"https://wolvic.com/zh/start/index.html"'
+            variant.buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.HUAWEI_ASR }"
+        } else if (platform.toLowerCase().startsWith('visionglass')) {
+            variant.resValue 'string', 'HOMEPAGE_URL', '"https://wolvic.com/zh/start/hvg.html"'
+            variant.buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.HUAWEI_ASR }"
+        } else if (platform.toLowerCase().startsWith('picoxr')) {
+            variant.resValue 'string', 'HOMEPAGE_URL', '"https://wolvic.com/zh/start/pico.html"'
+            variant.buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.MEETKAI }"
+        }
+    }
+
+    // Append "Dev" to the app name for debug builds. We do it by directly modifying the resource
+    // value so that this is visible from inside the app.
+    if (variant.buildType.name == "debug") {
+        variant.resValue "string", "app_name", variant.mergedFlavor.resValues.get("string/app_name").value + " (Dev)"
+    }
+}
