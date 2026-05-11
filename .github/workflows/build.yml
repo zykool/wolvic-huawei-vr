@@ -38,7 +38,7 @@ jobs:
         ./gradlew "assemble${VARIANT_CAP}Arm64GeckoGenericDebug"
 
     - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: Wolvic-${{ matrix.variant }}-arm64-debug
         path: app/build/outputs/apk/**/*
