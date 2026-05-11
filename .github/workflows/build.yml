@@ -35,7 +35,7 @@ jobs:
       run: |
         VARIANT="${{ matrix.variant }}"
         VARIANT_CAP="${VARIANT^}"
-        ./gradlew "assembleArm64${VARIANT_CAP}GeckoGenericDebug"
+        ./gradlew "assemble${VARIANT_CAP}Arm64GeckoGenericDebug"
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
